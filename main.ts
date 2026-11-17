@@ -18,10 +18,12 @@
 // an hour-h print, it takes the kernel-weighted mean and standard deviation of
 // r = ln(v_h / v_1), then reports q_tau = p1 * exp(mean + z_tau * 0.9 * sd)
 // with z = (-1.645, -0.674, 0, 0.674, 1.645). The spread is floored at 0.15
-// log units so a tight hour never claims false certainty.
+// log units so a tight hour never claims false certainty, and widened by
+// sqrt(1 + 1/ESS) when the kernel-weighted effective sample behind an hour
+// is thin, because then the spread estimate itself is unreliable.
 //
 // Leave-one-out validation over the 38 comparables in the kit (pinball loss
-// on the log scale, scored exactly as the contest scores): mean 0.393, vs
+// on the log scale, scored exactly as the contest scores): mean 0.392, vs
 // 0.930 for the house persistence baseline. On practice-like cases
 // (hour-1 print 20k-300k) it scores ~0.285 vs the baseline's ~0.349.
 //
@@ -100,8 +102,20 @@ function hourQuantiles(p1: number, h: number, curves: Array<Map<number, number>>
     return Z.map((z) => round2(p1 * Math.exp(z * FALLBACK_SIGMA * Math.sqrt(h - 1))));
   }
   const mean = sMean / sw;
-  for (const [w, r] of pts) sVar += w * (r - mean) ** 2;
-  const sd = Math.max(Math.sqrt(sVar / sw), SPREAD_FLOOR) * SPREAD_MULT;
+  let sW2 = 0;
+  for (const [w, r] of pts) {
+    sVar += w * (r - mean) ** 2;
+    sW2 += w * w;
+  }
+  // The kernel-weighted spread is only as reliable as the effective sample
+  // behind it. When few comparables carry real weight (a small or unusual
+  // hour-1 print), the spread estimate itself is noisy, so widen it by
+  // sqrt(1 + 1/ESS), where ESS = (sum w)^2 / sum w^2. The factor is bounded
+  // by sqrt(2) by construction (ESS >= 1), so a well-covered hour is barely
+  // touched and a thin one never blows up. LOO: 0.392 vs 0.393 without it.
+  const ess = (sw * sw) / Math.max(sW2, 1e-12);
+  const thin = Math.sqrt(1 + 1 / Math.max(ess, 1));
+  const sd = Math.max(Math.sqrt(sVar / sw), SPREAD_FLOOR) * SPREAD_MULT * thin;
   // Round, clamp to (0, 1e9], and force non-decreasing after rounding.
   const qs: number[] = [];
   let prev = 0;
